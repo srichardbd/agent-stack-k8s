@@ -16,6 +16,7 @@ import (
 	"github.com/buildkite/agent-stack-k8s/v2/internal/controller/monitor"
 	"github.com/buildkite/agent-stack-k8s/v2/internal/controller/scheduler"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -30,13 +31,36 @@ func Run(
 	k8sClient kubernetes.Interface,
 	cfg *config.Config,
 ) {
+	httpMuxes := make(map[string]*http.ServeMux)
+
 	if cfg.ProfilerAddress != "" {
 		logger.Info("profiler listening for requests")
+		// Specifically set the mux to DefaultServeMux, because the pprof
+		// handlers are registered there.
+		httpMuxes[cfg.ProfilerAddress] = http.DefaultServeMux
+	}
+	if cfg.PrometheusAddress != "" {
+		logger.Info("prometheus metrics handler listening for requests")
+		// If PrometheusAddress == ProfilerAddress, the mux will already be set
+		// to DefaultServeMux.
+		// If PrometheusAddress != ProfilerAddress, we don't want to
+		// expose pprof handlers on this mux, so make a new mux.
+		mux := httpMuxes[cfg.PrometheusAddress]
+		if mux == nil {
+			mux = http.NewServeMux()
+		}
+		mux.Handle("GET /metrics", promhttp.Handler())
+		httpMuxes[cfg.PrometheusAddress] = mux
+	}
+
+	for addr, mux := range httpMuxes {
 		go func() {
-			srv := http.Server{Addr: cfg.ProfilerAddress, ReadHeaderTimeout: 2 * time.Second}
-			if err := srv.ListenAndServe(); err != nil {
-				logger.Error("problem running profiler server", zap.Error(err))
+			svr := &http.Server{
+				Addr:              addr,
+				ReadHeaderTimeout: 2 * time.Second,
+				Handler:           mux,
 			}
+			logger.Error("http server exited", zap.Error(svr.ListenAndServe()))
 		}()
 	}
 

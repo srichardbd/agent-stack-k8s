@@ -45,12 +45,13 @@ func New(logger *zap.Logger, handler model.JobHandler) *Deduper {
 func (d *Deduper) RegisterInformer(ctx context.Context, factory informers.SharedInformerFactory) error {
 	informer := factory.Batch().V1().Jobs()
 	jobInformer := informer.Informer()
-	if _, err := jobInformer.AddEventHandler(d); err != nil {
+	reg, err := jobInformer.AddEventHandler(d)
+	if err != nil {
 		return err
 	}
 	go factory.Start(ctx.Done())
 
-	if !cache.WaitForCacheSync(ctx.Done(), jobInformer.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), reg.HasSynced) {
 		return fmt.Errorf("failed to sync informer cache")
 	}
 
